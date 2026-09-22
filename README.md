@@ -1,589 +1,538 @@
 # JobFlow 🚀
 
-**Reliable Concurrent Background Job Processing Platform**
+### Reliable Concurrent Background Job Processing Platform
 
-A production-ready, scalable background job processor built with FastAPI, PostgreSQL, and React. JobFlow provides safe concurrent job execution with priority ordering, automatic retries, real-time monitoring, and comprehensive error handling.
+JobFlow is a PostgreSQL-backed background job processing platform built with FastAPI, Python, React, and concurrent workers.
 
-[![GitHub](https://img.shields.io/badge/GitHub-JobFlow-blue?logo=github)](https://github.com/Raju-CS8/JobFlow)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-green)](https://fastapi.tiangolo.com/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13%2B-blue)](https://www.postgresql.org/)
+It demonstrates reliable job processing with priority scheduling, safe concurrent job claiming, retries with exponential backoff, persistent execution history, validation, stuck-job recovery, and automated CI testing.
+
+> **Engineering focus:** concurrency, database transactions, reliability, fault handling, idempotent processing, and observability.
 
 ---
 
-## ✨ Features
+## ✨ Core Features
 
-### Core Capabilities
-- **Safe Concurrent Processing** — `FOR UPDATE SKIP LOCKED` prevents race conditions across multiple workers
-- **Priority-Based Execution** — HIGH → NORMAL → LOW job ordering
-- **Automatic Retries** — Exponential backoff (1s, 2s, 4s) for transient failures
-- **Batch Processing** — Submit 10+ jobs simultaneously via REST API
-- **Real-Time Monitoring** — Live dashboard with job status, statistics, and progress
-- **Production-Grade Validation** — Comprehensive input validation with detailed error messages
-- **Persistent Logging** — All job execution attempts stored for audit trails
-
-### Performance
-- **4.33x Throughput Scaling** — 3 workers process 200 jobs in 23.93s (vs 103.69s with 1 worker)
-- **Stuck Job Recovery** — Automatic detection and reprocessing after 5-minute threshold
-- **Efficient Polling** — 1-second worker poll interval with zero busy-waiting
+- 🔒 **Safe concurrent processing** using PostgreSQL `FOR UPDATE SKIP LOCKED`
+- 🚦 **Priority-based execution** — `HIGH → NORMAL → LOW`
+- 🔁 **Automatic retries** with exponential backoff
+- 🧾 **Persistent execution attempts** and error history
+- 🛡️ **Input validation** with clear failure handling
+- ♻️ **Stuck-job recovery** for jobs left in `RUNNING`
+- 📦 **Batch job submission**
+- 📊 **React monitoring dashboard** for job status and statistics
+- 🧪 **Automated tests** covering API, domain, processors, workers, and concurrency
+- ⚙️ **GitHub Actions CI** with PostgreSQL, migrations, and automated tests
 
 ---
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     React Frontend                       │
-│              (Real-time Job Monitoring)                  │
-└────────────────────────┬────────────────────────────────┘
-                         │ HTTP/WebSocket
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│                   FastAPI REST API                       │
-│    (Job Submission, Status Queries, Statistics)          │
-└────────────────────────┬────────────────────────────────┘
-                         │
-            ┌────────────┼────────────┐
-            ▼            ▼            ▼
-       ┌────────────────────────────────────┐
-       │      PostgreSQL Job Queue           │
-       │  (Persistent State Machine)         │
-       │  - Job metadata                     │
-       │  - Execution attempts               │
-       │  - Error logs                       │
-       └────────────────────────────────────┘
-            ▲            ▲            ▲
-            │            │            │
-       ┌────────────┬────────────┬────────────┐
-       │  Worker 1  │  Worker 2  │  Worker N  │
-       │ (Poller)   │ (Poller)   │ (Poller)   │
-       └────────────┴────────────┴────────────┘
+```text
+                         ┌──────────────────────────┐
+                         │      React Dashboard     │
+                         │       Vite Frontend      │
+                         └────────────┬─────────────┘
+                                      │ HTTP
+                                      ▼
+                         ┌──────────────────────────┐
+                         │       FastAPI API        │
+                         │  Submit / Query / Stats  │
+                         └────────────┬─────────────┘
+                                      │
+                                      ▼
+                    ┌──────────────────────────────────┐
+                    │           PostgreSQL              │
+                    │  Jobs / Attempts / Errors /      │
+                    │       Persistent State           │
+                    └───────────────┬──────────────────┘
+                                    │
+                         FOR UPDATE SKIP LOCKED
+                                    │
+             ┌──────────────────────┼──────────────────────┐
+             ▼                      ▼                      ▼
+      ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+      │   Worker 1  │       │   Worker 2  │       │   Worker N  │
+      │ Poll / Claim│       │ Poll / Claim│       │ Poll / Claim│
+      └──────┬──────┘       └──────┬──────┘       └──────┬──────┘
+             │                     │                     │
+             └─────────────────────┼─────────────────────┘
+                                   ▼
+                        ┌─────────────────────┐
+                        │    Job Executor      │
+                        │ Validation / Retry  │
+                        │ Success / Failure    │
+                        └─────────────────────┘
 ```
 
-**Key Design Pattern:**
-- **Safe Claiming:** Workers use `FOR UPDATE SKIP LOCKED` to atomically claim next job
-- **State Machine:** Enforced job lifecycle (PENDING → RUNNING → COMPLETED/FAILED/RETRYING)
-- **Idempotent Processing:** Jobs can be safely re-executed if a worker crashes
+### Job lifecycle
+
+```text
+PENDING
+   │
+   ▼
+RUNNING
+   │
+   ├──────────────► COMPLETED
+   │
+   ├──────────────► FAILED
+   │
+   └──────────────► RETRYING
+                         │
+                         ▼
+                      PENDING
+```
+
+### Concurrency strategy
+
+Workers safely claim jobs using PostgreSQL row-level locking:
+
+```sql
+SELECT *
+FROM jobs
+WHERE status = 'PENDING'
+ORDER BY priority DESC, created_at ASC
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+```
+
+This allows multiple workers to compete for work while skipping rows already claimed by another worker.
 
 ---
 
-## 📋 Tech Stack
+## 🧰 Tech Stack
 
 | Layer | Technology |
-|-------|------------|
-| **Frontend** | React 18, Vite, Tailwind CSS |
-| **Backend** | FastAPI, Pydantic, SQLAlchemy |
-| **Database** | PostgreSQL 13+ |
-| **Migrations** | Alembic |
-| **Testing** | Pytest, concurrent testing |
-| **Deployment** | Python 3.9+, uvicorn |
+|---|---|
+| Backend | Python, FastAPI |
+| Validation | Pydantic |
+| ORM / Database Access | SQLAlchemy |
+| Database | PostgreSQL |
+| Migrations | Alembic |
+| Worker System | Python concurrent workers |
+| Frontend | React + Vite |
+| API Documentation | Swagger / OpenAPI |
+| Testing | Pytest + pytest-asyncio |
+| CI | GitHub Actions |
+
+---
+
+## 📊 Performance Benchmark
+
+A benchmark using **200 jobs** demonstrated concurrent throughput scaling:
+
+| Workers | Jobs | Duration | Throughput | Speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 200 | 103.69s | 1.93 jobs/s | 1.00× |
+| 3 | 200 | 23.93s | **8.36 jobs/s** | **4.33×** |
+
+> Results depend on hardware, database configuration, workload, and environment.
+
+---
+
+## 🧪 Testing & CI
+
+The test suite covers:
+
+- Domain state transitions
+- API endpoints
+- Job validation
+- Order reconciliation
+- Retry behavior
+- Job claiming
+- Priority ordering
+- FIFO ordering within the same priority
+- Attempt tracking
+- Concurrent workers
+- Race-condition prevention
+
+Run locally:
+
+```bash
+pytest -v
+```
+
+### Current local result
+
+```text
+48 passed
+```
+
+### GitHub Actions
+
+Every push and pull request to `main`/`master` triggers CI.
+
+The workflow:
+
+1. Starts PostgreSQL
+2. Sets up Python 3.10
+3. Installs dependencies
+4. Runs Alembic migrations
+5. Executes the full Pytest suite
+
+**CI status: ✅ Passing**
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- **Python 3.9+**
-- **PostgreSQL 13+** (running locally)
-- **Node.js 16+** (for frontend)
-- **Git**
 
-### 1️⃣ Clone Repository
+- Python 3.10+
+- PostgreSQL
+- Node.js / npm
+- Git
+
+### 1. Clone
+
 ```bash
-git clone https://github.com/Raju-CS8/JobFlow.git
-cd JobFlow
+git clone https://github.com/Raju-CS8/JobFlow-Reliable-Background-Job-Processing-Platform.git
+cd JobFlow-Reliable-Background-Job-Processing-Platform
 ```
 
-### 2️⃣ Setup Backend
+### 2. Create the Python environment
 
-**Create Python Virtual Environment:**
-```bash
+#### Windows
+
+```powershell
 python -m venv venv
-.\venv\Scripts\activate  # Windows
-source venv/bin/activate  # macOS/Linux
+.\venv\Scripts\Activate.ps1
 ```
 
-**Install Dependencies:**
+#### macOS / Linux
+
 ```bash
-pip install fastapi uvicorn pydantic sqlalchemy alembic psycopg2-binary pytest pytest-asyncio requests
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-**Setup PostgreSQL Database:**
+### 3. Install backend dependencies
+
 ```bash
-psql -U postgres
+pip install fastapi==0.104.1 uvicorn==0.24.0 pydantic==2.5.0
+pip install sqlalchemy==2.0.23 alembic==1.13.0
+pip install psycopg2-binary==2.9.9 httpx==0.25.2
+pip install pytest==7.4.3 pytest-asyncio==0.21.1
+```
+
+### 4. Configure PostgreSQL
+
+Create the database and application user:
+
+```sql
 CREATE DATABASE jobflow;
 CREATE USER jobflow WITH PASSWORD 'jobflow';
-ALTER ROLE jobflow SET client_encoding TO 'utf8';
-ALTER ROLE jobflow SET default_transaction_isolation TO 'read committed';
-ALTER ROLE jobflow SET default_transaction_deferrable TO on;
 GRANT ALL PRIVILEGES ON DATABASE jobflow TO jobflow;
-\q
 ```
 
-**Run Database Migrations:**
+Default local connection:
+
+```text
+postgresql://jobflow:jobflow@127.0.0.1:5432/jobflow
+```
+
+> For production, use environment variables or a secret manager instead of committing credentials.
+
+### 5. Run migrations
+
 ```bash
 alembic upgrade head
 ```
 
-**Verify Setup:**
+### 6. Run tests
+
 ```bash
-pytest  # Run all tests
+pytest -v
 ```
 
-### 3️⃣ Setup Frontend
-```bash
-cd frontend
-npm install
-```
+### 7. Start the FastAPI backend
 
-### 4️⃣ Run the Application
-
-**Terminal 1 — Start React Frontend:**
-```bash
-cd frontend
-npm run dev
-```
-Access: **http://localhost:5173**
-
-**Terminal 2 — Start FastAPI Server:**
 ```bash
 uvicorn jobflow.app:app --reload --host 127.0.0.1 --port 8000
 ```
-API: **http://localhost:8000**
-Docs: **http://localhost:8000/docs** (Swagger UI)
 
-**Terminal 3+ — Start Worker(s):**
+Backend: `http://127.0.0.1:8000`
+
+Swagger UI: `http://127.0.0.1:8000/docs`
+
+### 8. Start a worker
+
+In another terminal:
+
 ```bash
 python -m jobflow.worker.worker
 ```
-Start multiple workers for higher throughput:
+
+For concurrent processing, run additional workers in separate terminals.
+
+### 9. Start the React dashboard
+
 ```bash
-# Terminal 3
-python -m jobflow.worker.worker
-
-# Terminal 4
-python -m jobflow.worker.worker
-
-# Terminal 5
-python -m jobflow.worker.worker
+cd frontend
+npm install
+npm run dev
 ```
 
-### 5️⃣ Submit Demo Batch
-```bash
-python demo_batch.py
-```
-Submits 10 jobs (mix of HIGH/NORMAL/LOW priority, valid + invalid payloads) for concurrent processing.
+Frontend: `http://localhost:5173`
 
 ---
 
-## 📚 API Documentation
+## 📡 API
 
-### Base URL
-```
-http://localhost:8000
-```
+### Submit a job
 
-### Endpoints
-
-#### **Submit Job**
 ```http
 POST /jobs
 Content-Type: application/json
+```
 
+Example:
+
+```json
 {
   "job_type": "order_reconciliation",
   "priority": "HIGH",
   "payload": {
     "orders": [
       {
-        "order_id": "ORD001",
-        "amount": 150.50,
-        "currency": "USD",
+        "order_id": "ORD-001",
+        "amount": 1500.50,
+        "currency": "INR",
+        "status": "PAID"
+      },
+      {
+        "order_id": "ORD-002",
+        "amount": 750.00,
+        "currency": "INR",
         "status": "PENDING"
       }
     ]
-  }
+  },
+  "max_attempts": 3
 }
 ```
 
-**Response (201 Created):**
-```json
-{
-  "job_id": "uuid-here",
-  "job_type": "order_reconciliation",
-  "status": "PENDING",
-  "priority": "HIGH",
-  "created_at": "2026-09-06T10:30:00Z"
-}
-```
+### Endpoints
 
-#### **List Jobs (Paginated)**
-```http
-GET /jobs?limit=50&offset=0
-```
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/jobs` | Submit a job |
+| `GET` | `/jobs` | List jobs |
+| `GET` | `/jobs/{job_id}` | Get job details |
+| `GET` | `/stats` | Get job statistics |
+| `GET` | `/health` | Health check |
 
-**Response:**
-```json
-{
-  "jobs": [
-    {
-      "job_id": "uuid",
-      "job_type": "order_reconciliation",
-      "status": "COMPLETED",
-      "priority": "HIGH",
-      "result": {
-        "reconciled_orders": 1,
-        "total_amount": 150.50
-      },
-      "created_at": "2026-09-06T10:30:00Z"
-    }
-  ],
-  "total": 100,
-  "limit": 50,
-  "offset": 0
-}
-```
+Interactive documentation:
 
-#### **Get Job Details**
-```http
-GET /jobs/{job_id}
-```
-
-**Response:**
-```json
-{
-  "job_id": "uuid",
-  "job_type": "order_reconciliation",
-  "status": "COMPLETED",
-  "priority": "HIGH",
-  "payload": {...},
-  "result": {...},
-  "error": null,
-  "attempts": 1,
-  "created_at": "2026-09-06T10:30:00Z",
-  "completed_at": "2026-09-06T10:30:15Z"
-}
-```
-
-#### **Get System Statistics**
-```http
-GET /stats
-```
-
-**Response:**
-```json
-{
-  "total_jobs": 1000,
-  "pending": 50,
-  "running": 10,
-  "completed": 850,
-  "failed": 90,
-  "avg_execution_time": 15.3,
-  "success_rate": 0.90
-}
-```
-
-#### **Health Check**
-```http
-GET /health
-```
-
-**Response:**
-```json
-{
-  "status": "healthy"
-}
+```text
+http://127.0.0.1:8000/docs
 ```
 
 ---
 
-## 🏃 Running Scenarios
+## 🔁 Retry & Failure Handling
 
-### Scenario 1: Single Worker
-```bash
-# Terminal 2
-uvicorn jobflow.app:app --reload
+JobFlow distinguishes between transient and permanent failures.
 
-# Terminal 3
-python -m jobflow.worker.worker
+### Retryable failures
 
-# Then submit batch
-python demo_batch.py
-# Result: ~1.9 jobs/sec throughput
+Transient failures can move a job into `RETRYING` and use exponential backoff:
+
+```text
+Attempt 1 → wait 1s
+Attempt 2 → wait 2s
+Attempt 3 → wait 4s
 ```
 
-### Scenario 2: Three Concurrent Workers (Recommended)
-```bash
-# Terminal 2
-uvicorn jobflow.app:app --reload
+### Permanent failures
 
-# Terminal 3
-python -m jobflow.worker.worker
+Validation and unsupported job errors can be marked as `FAILED` without repeatedly retrying an invalid job.
 
-# Terminal 4
-python -m jobflow.worker.worker
+### Persistent attempt history
 
-# Terminal 5
-python -m jobflow.worker.worker
+Each execution attempt records information such as:
 
-# Then submit batch
-python demo_batch.py
-# Result: ~8.3 jobs/sec throughput (4.33x improvement!)
-```
-
-### Scenario 3: Clean Slate Before Demo
-```bash
-# Reset database
-psql -U postgres -d jobflow -c "DELETE FROM jobs; DELETE FROM job_attempts;"
-
-# Then run the application normally
-```
+- Attempt number
+- Worker information
+- Execution state
+- Errors
+- Timing information
 
 ---
 
-## 📊 Performance Benchmarks
+## ♻️ Stuck Job Recovery
 
-### Throughput Scaling
+If a worker fails after a job enters `RUNNING`, recovery logic can detect jobs that remain running beyond the configured threshold.
 
-| Workers | Jobs | Duration | Throughput | Speedup |
-|---------|------|----------|-----------|---------|
-| 1       | 200  | 103.69s  | 1.93 j/s  | 1.0x    |
-| 3       | 200  | 23.93s   | 8.36 j/s  | **4.33x** |
+```text
+Worker starts job
+      │
+      ▼
+   RUNNING
+      │
+ Worker crashes
+      │
+      ▼
+Stuck-job detection
+      │
+      ▼
+   RETRYING
+      │
+      ▼
+Another worker
+reclaims the job
+```
 
-**Test Methodology:**
-- Consistent job payload across runs
-- Fresh database before each test
-- 1-second worker poll interval
-- Network latency included
-
-### Scaling Insights
-- **Linear scaling** up to 4 workers (PostgreSQL connection-bound)
-- **Diminishing returns** beyond 4 workers
-- **Network latency** becomes bottleneck at high worker counts
+JobFlow uses **at-least-once processing semantics**. Idempotent processing helps make safe re-execution possible during retries and recovery.
 
 ---
 
-## 🏗️ Project Structure
+## 📁 Project Structure
 
-```
+```text
 JobFlow/
-├── jobflow/
-│   ├── __init__.py
-│   ├── app.py                 # FastAPI application
-│   ├── config.py              # Configuration
-│   ├── cli.py                 # CLI commands
-│   ├── domain/
-│   │   ├── job.py             # Job domain model & state machine
-│   │   └── exceptions.py       # Custom exceptions
-│   ├── api/
-│   │   ├── schemas.py         # Pydantic request/response schemas
-│   │   └── routes.py          # FastAPI route handlers
-│   ├── db/
-│   │   ├── database.py        # PostgreSQL connection
-│   │   └── models.py          # SQLAlchemy ORM models
-│   ├── repository/
-│   │   ├── base.py            # Base repository interface
-│   │   └── postgres_repo.py   # PostgreSQL implementation
-│   ├── processors/
-│   │   └── order_reconciliation.py  # Job processing logic
-│   └── worker/
-│       ├── worker.py          # Worker main loop
-│       └── job_executor.py    # Job execution engine
-├── tests/
-│   ├── test_domain.py         # Domain logic tests
-│   ├── test_api.py            # API endpoint tests
-│   ├── test_processors.py     # Processor tests
-│   ├── test_worker.py         # Worker tests
-│   └── test_concurrent_workers.py  # Concurrency tests
-├── frontend/                  # React Vite application
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── components/
-│   │   ├── pages/
-│   │   └── api.js
-│   ├── index.html
-│   └── package.json
-├── alembic/                   # Database migrations
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+├── alembic/
 │   ├── env.py
-│   ├── versions/
-│   └── alembic.ini
-├── demo_batch.py              # Batch submission demo script
-├── benchmark.py               # Performance benchmarking
-├── pytest.ini
+│   └── versions/
+│
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── styles/
+│   │   ├── App.jsx
+│   │   └── api.js
+│   ├── package.json
+│   └── vite.config.js
+│
+├── jobflow/
+│   ├── api/
+│   ├── db/
+│   ├── domain/
+│   ├── processors/
+│   ├── repository/
+│   └── worker/
+│
+├── tests/
+│   ├── test_api.py
+│   ├── test_concurrent_workers.py
+│   ├── test_domain.py
+│   ├── test_processors.py
+│   └── test_worker.py
+│
+├── benchmark.py
+├── demo_batch.py
+├── alembic.ini
 ├── pyproject.toml
+├── pytest.ini
 └── README.md
 ```
 
 ---
 
-## 🧪 Testing
+## 🧠 Engineering Concepts Demonstrated
 
-### Run All Tests
-```bash
-pytest
+### Database-backed queue
+
+PostgreSQL provides durable job state instead of relying on an in-memory queue.
+
+### Transactional job claiming
+
+`FOR UPDATE SKIP LOCKED` prevents multiple workers from claiming the same pending job.
+
+### Priority scheduling
+
+Jobs are selected by priority first, then creation time.
+
+### State machine
+
+```text
+PENDING
+   ↓
+RUNNING
+   ├──→ COMPLETED
+   ├──→ FAILED
+   └──→ RETRYING → PENDING
 ```
 
-### Run Specific Test Suite
-```bash
-pytest tests/test_domain.py -v              # Domain logic
-pytest tests/test_api.py -v                 # API endpoints
-pytest tests/test_concurrent_workers.py -v  # Concurrency (slow)
-```
+### Idempotent processing
 
-### Test Coverage
-```bash
-pytest --cov=jobflow tests/
-```
+Job processors are designed so safe re-execution is possible when retries or recovery occur.
 
-**Current Coverage:**
-- ✅ Domain state machine
-- ✅ API endpoints
-- ✅ Concurrent job claiming
-- ✅ Retry mechanism
-- ✅ Validation logic
+---
+
+## 🔐 Reliability Model
+
+JobFlow intentionally uses **at-least-once processing semantics** rather than claiming exactly-once execution.
+
+A worker can fail after performing work but before recording the final state. Recovery can therefore execute a job again.
+
+The system addresses this with:
+
+- Persistent job state
+- Persistent attempt history
+- Stuck-job recovery
+- Idempotent processing
+- Separation of retryable and permanent failures
 
 ---
 
 ## ⚙️ Configuration
 
-### Worker Configuration
-**File:** `jobflow/worker/worker.py`
+Important worker settings include:
 
-```python
-POLL_INTERVAL = 1  # seconds between job claims
-STUCK_JOB_THRESHOLD = 300  # 5 minutes
-RETRY_BACKOFF = [1, 2, 4]  # exponential backoff in seconds
+```text
+Poll interval:          1 second
+Stuck-job threshold:    5 minutes
+Retry backoff:          1s, 2s, 4s
 ```
 
-### Database Configuration
-**File:** `jobflow/config.py`
-
-```python
-DATABASE_URL = "postgresql://jobflow:jobflow@localhost:5432/jobflow"
-```
-
-### API Configuration
-**File:** `jobflow/app.py`
-
-```python
-API_TITLE = "JobFlow API"
-API_VERSION = "1.0.0"
-PAGINATION_LIMIT = 50
-```
+For production deployments, credentials should be supplied through environment variables or a secret manager.
 
 ---
 
-## 📖 Key Concepts
+## 🗺️ Roadmap
 
-### Safe Concurrent Claiming
-JobFlow uses **`FOR UPDATE SKIP LOCKED`** to safely claim jobs:
-```sql
-SELECT * FROM jobs 
-WHERE status = 'PENDING' 
-ORDER BY priority DESC, created_at ASC
-FOR UPDATE SKIP LOCKED
-LIMIT 1;
-```
+Potential future improvements:
 
-This ensures:
-- ✅ No race conditions
-- ✅ No duplicate processing
-- ✅ Workers automatically skip locked rows
-- ✅ Higher-priority jobs are processed first
-
-### State Machine
-```
-PENDING → RUNNING → COMPLETED
-                 ↓
-             FAILED (permanent)
-                 ↓
-           RETRYING → RUNNING (same flow)
-```
-
-### Idempotent Processing
-If a worker crashes during execution:
-1. Job remains in `RUNNING` state
-2. Stuck job recovery detects it after 5 minutes
-3. Job moves to `RETRYING` state
-4. Another worker picks it up and re-executes
-5. Safe because job processor is idempotent (no duplicate side effects)
+- [ ] WebSocket-based live job updates
+- [ ] Scheduled / cron-style jobs
+- [ ] Dead-letter queue
+- [ ] Prometheus metrics
+- [ ] Advanced retry policies with jitter
+- [ ] Distributed deployment
+- [ ] Kubernetes deployment configuration
+- [ ] Additional job processor types
 
 ---
 
-## 🐛 Known Limitations
+## 👨‍💻 Author
 
-| Issue | Status | Impact |
-|-------|--------|--------|
-| Exactly-once semantics | ❌ Not guaranteed | At-least-once (OK for idempotent ops) |
-| Stuck job recovery | Heuristic-based (5min) | Potential short delay in recovery |
-| Single PostgreSQL | ✅ Sufficient | Multi-DB not required for this scale |
-| No Redis/Kafka | ✅ By design | PostgreSQL sufficient; avoids complexity |
+**Raju CS**  
+MCA Student — CHRIST (Deemed to be University), Bengaluru
 
 ---
 
-## 🤝 Contributing
+## 🔗 Links
 
-### Development Setup
-```bash
-git clone https://github.com/Raju-CS8/JobFlow.git
-cd JobFlow
-python -m venv venv
-.\venv\Scripts\activate
-pip install -e ".[dev]"
-pytest
-```
+**Repository:**  
+https://github.com/Raju-CS8/JobFlow-Reliable-Background-Job-Processing-Platform
 
-### Making Changes
-1. Create feature branch: `git checkout -b feature/your-feature`
-2. Make changes and test: `pytest`
-3. Commit: `git commit -m "Add feature description"`
-4. Push: `git push origin feature/your-feature`
-5. Open Pull Request
+**Swagger API:**  
+http://127.0.0.1:8000/docs
+
+**Frontend:**  
+http://localhost:5173
 
 ---
 
-## 📝 License
+## 📄 License
 
-This project is licensed under the **MIT License** — see LICENSE file for details.
-
----
-
-## 👨‍💼 Author
-
-**Raju CS** — MCA Student, CHRIST (Deemed to be University), Bengaluru
+Add a license file before claiming a specific open-source license for the repository.
 
 ---
 
-## 📞 Support & Questions
-
-- 📧 Open an issue on GitHub
-- 💬 Check existing issues for similar problems
-- 📖 Read API documentation at `/docs` (Swagger UI)
-
----
-
-## 🎯 Roadmap
-
-### v1.1 (Planned)
-- [ ] WebSocket real-time job updates
-- [ ] Job scheduling (cron-like)
-- [ ] Dead letter queue for permanent failures
-- [ ] Prometheus metrics export
-
-### v2.0 (Future)
-- [ ] Multi-database support (MySQL, SQLite)
-- [ ] Redis integration for distributed caching
-- [ ] Kubernetes Helm charts
-- [ ] Advanced retry policies (exponential jitter, max duration)
-
----
-
-## 🚀 Quick Links
-
-- **GitHub:** https://github.com/Raju-CS8/JobFlow
-- **API Docs:** http://localhost:8000/docs (when running)
-- **Frontend:** http://localhost:5173 (when running)
-
----
-
-**Made with ❤️ for reliable background job processing**
+### Built to demonstrate reliable background processing, concurrency, database transactions, fault handling, and production-oriented engineering.
